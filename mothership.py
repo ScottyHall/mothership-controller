@@ -18,18 +18,19 @@ client_id: str = "scotty_{0}".format(ubinascii.hexlify(unique_id()).decode())
 username: str = "Scotty"
 all_client_id: str = "all"  # keyword for all clients
 # TODO: Cleanup subs and pubs
-topic_pub_list = ["config", "time", "msg", "here", "youThere", "response", "squeeze"]
+topic_pub_list = [
+    "config",
+    "time",
+    "msg",
+    "response",
+    "api/users/r/getAllUsers",
+    "api/game/mtg/r/join",
+]
 topic_sub: list = [
-    b"lightMsg",
-    b"time",
+    b"api/game/mtg/p/update",
     b"test",
-    b"getConfig",
-    b"msg",
-    b"youThere",
-    b"here",
     b"question",
-    b"response",
-    b"squeeze",
+    b"api/users/p/getAllUsers",
 ]
 
 # mothership pinout
@@ -48,6 +49,9 @@ i2c = I2C(0, sda=Pin(0), scl=Pin(1), freq=400000)
 
 # User selectable characters
 characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.!@#$%^&*()_-+=[]{};:,<>/? "
+
+mothershipUsers = None
+selectedUser = None
 
 tim = Timer()
 
@@ -150,6 +154,8 @@ class CharacterSelector:
         show_question = True
         character_count = len(options)
 
+        last_encoder_value = get_encoder_value()
+
         while True:
             self.oled.clear()
             if show_question:
@@ -160,6 +166,14 @@ class CharacterSelector:
                 self.oled.display_text(selected_character, 10)
 
             self.oled.show()
+
+            current_encoder_value = get_encoder_value()
+            if current_encoder_value != last_encoder_value:
+                if current_encoder_value > last_encoder_value:
+                    selected_index = (selected_index + 1) % character_count
+                else:
+                    selected_index = (selected_index - 1) % character_count
+                last_encoder_value = current_encoder_value
 
             if not self.left_button.value():
                 if show_question:
@@ -284,6 +298,13 @@ class Heartbeat(object):
             payload=json.dumps({"test": "testpayload"}),
         )
 
+    def publish_user_request(self):
+        publish_message(
+            self.client,
+            topic="api/users/r/getAllUsers",
+            payload={},
+        )
+
     def reset_heartbeat(self, frequency=1):
         self.freq = frequency
         print("reset hb with freq of {0}".format(frequency))
@@ -313,6 +334,7 @@ class MqttHandler(object):
 
     def check_msg(self, topic, msg):
         """Callback trigger from subscription response"""
+        global mothershipUsers
         try:
             loadedTopic: str = topic.decode()
             loadedJson: dict = json.loads(msg.decode())
@@ -326,6 +348,8 @@ class MqttHandler(object):
                 # publish the config on the config topic
                 if to_me(loadedJson["client_id"]):
                     self.heart_beat.publish_config()
+            elif loadedTopic == "api/game/mtg/p/update":
+                print(loadedJson)
             elif loadedTopic == "question":
                 if (
                     to_me(loadedJson["client_id"])
@@ -365,6 +389,9 @@ class MqttHandler(object):
                     self.oled.show()
                 else:
                     print("not to me")
+            elif loadedTopic == "api/users/p/getAllUsers":
+                mothershipUsers = loadedJson
+                print(mothershipUsers)
             elif loadedTopic == "test":
                 print("test received")
             else:
@@ -459,11 +486,55 @@ def connect_to_wlan(ssid, password):
     return wlan
 
 
+class MTGGame:
+    def __init__(self, mqtt_handler):
+        self.mqtt_handler = mqtt_handler
+        self.players = []
+        self.game_over = False
+        self.current_player = None
+
+    def join_game(self, uid):
+        publish_message(
+            client=self.mqtt_handler.heart_beat.client,
+            topic="api/game/mtg/r/join",
+            payload=uid,
+        )
+
+    def update_game_state(self, update):
+        self.game_over = update.get("gameOver", False)
+        self.players = update.get("lobby", [])
+        self.current_player = update.get("currentPlayer", None)
+
+        # Update the OLED screen with the current game state
+        self.update_display()
+
+    def update_display(self):
+        # Example: Display the current players on the OLED screen
+        player_info = "\n".join(
+            [
+                f"{player['playerName']}: {player['playerHealth']}"
+                for player in self.players
+            ]
+        )
+        self.mqtt_handler.oled.display_long_text(player_info)
+
+    def handle_command(self, command):
+        if command == "joinGame":
+            self.join_game(command.player_id)
+        elif command == "startGame":
+            self.start_game()
+        elif command == "meNext":
+            # Logic to handle turn order
+            pass
+
+
 class MainMenu:
-    def __init__(self, oled: OLED):
+    def __init__(self, oled: OLED, mqtt_handler: MqttHandler):
         self.oled: OLED = oled
         self.menu_options = ["Login", "MTG", "Info"]
         self.selected_index = 0
+        self.mqtt_handler = mqtt_handler
+        self.mtg_game = MTGGame(mqtt_handler)
 
     def left(self):
         menu_count = len(self.menu_options)
@@ -483,7 +554,28 @@ class MainMenu:
         self.oled.display_text(selected_option, 20)
         self.oled.show()
 
+    def login(self):
+        global selectedUser
+        # Display login screen and allow user selection
+        users = mothershipUsers  # Access global variable
+        if users:
+            user_names = [
+                user["name"] for user in users if user.get("name") is not None
+            ]
+            print(user_names)
+            selectedUser = self.mqtt_handler.selector.custom_choice(
+                question="Select User:", options=user_names
+            )
+            if selectedUser:
+                return users[user_names.index(selectedUser)]["uid"]
+            else:
+                return None
+        else:
+            print("No users available.")
+            return None
+
     def select_menu_option(self, mqtt_handler: MqttHandler):
+        global selectedUser
         if self.menu_options[self.selected_index] == "Send":
             time.sleep(0.2)
             new_msg = mqtt_handler.selector.yes("New Message?")
@@ -535,6 +627,23 @@ class MainMenu:
             self.oled.display_text("Message", 0)
             self.oled.display_text("Published!", 10)
             self.oled.show()
+
+        elif self.menu_options[self.selected_index] == "Login":
+            selectedUser = self.login()
+            if selectedUser:
+                global selectedUser
+                selectedUser = selectedUser
+                print("Selected user:", selectedUser)
+
+        elif self.menu_options[self.selected_index] == "MTG":
+            if selectedUser:
+                # Handle "MTG" menu option
+                self.oled.clear()
+                self.oled.display_text("Starting MTG Game...", 0)
+                self.oled.show()
+                self.mtg_game.join_game(selectedUser)
+            else:
+                selectedUser = self.login()
 
         elif self.menu_options[self.selected_index] == "Messages":
             mqtt_handler.mothership.display_oldest_message()
@@ -636,9 +745,6 @@ def main():
     oled.clear()
     oled.show()
 
-    # instance of the main menu
-    main_menu = MainMenu(oled)
-
     # encoder setup and value
     setupEncoder()
     last_encoder_value = get_encoder_value()
@@ -686,6 +792,9 @@ def main():
     client = None
     wlan = connect_to_wlan(ssid, password)
 
+    # instance of the main menu
+    main_menu = MainMenu(oled=oled, mqtt_handler=mqtt_handler)
+
     # show connecting to ssid on oled
     oled.clear()
     oled.display_text("Connecting to:", 0)
@@ -731,6 +840,7 @@ def main():
                     mothership=mqtt_handler.mothership,
                 )
                 mqtt_handler.heart_beat.publish_config()
+                mqtt_handler.heart_beat.publish_user_request()
                 main_menu.display_menu()
         else:
             try:
