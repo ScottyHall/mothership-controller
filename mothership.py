@@ -5,8 +5,18 @@ import random
 import time
 import ubinascii
 import usocket
+import framebuf
+from image_bytes import (
+    skull_bytes,
+    heart_bytes,
+    wing_bytes,
+    d20_bytes,
+    mothership_bytes,
+    crown_bytes,
+    black_lotus_bytes,
+)
 
-from machine import PWM, Pin, Timer, unique_id, I2C, ADC
+from machine import Pin, Timer, unique_id, I2C
 
 # micropython-ssd1306
 from ssd1306 import SSD1306_I2C
@@ -78,6 +88,15 @@ class OLED:
     def display_text(self, text, y):
         self.oled.text(text, 0, y)
 
+    def blink(self, duration=0.08, repetitions=2):
+        for _ in range(repetitions):
+            self.oled.invert(1)  # Invert the display
+            self.show()
+            time.sleep(duration)  # Wait for the specified duration
+            self.oled.invert(0)  # Revert back to normal
+            self.show()
+            time.sleep(duration)  # Wait for the specified duration
+
     def display_long_text(self, text):
         self.clear()
         max_chars_per_line = (
@@ -97,6 +116,49 @@ class OLED:
 
         # Display the content on the OLED screen
         self.oled.show()
+
+    def display_skull(self, xPx: int = 0):
+        skull_fb = framebuf.FrameBuffer(skull_bytes, 32, 32, framebuf.MONO_HLSB)
+        self.oled.blit(skull_fb, xPx, 0)
+        self.oled.show()
+
+    def display_heart(self, xPx: int = 0):
+        heart_fb = framebuf.FrameBuffer(heart_bytes, 32, 32, framebuf.MONO_HLSB)
+        self.oled.blit(heart_fb, xPx, 0)
+        self.oled.show()
+
+    def display_wing(self, xPx: int = 0):
+        wing_fb = framebuf.FrameBuffer(wing_bytes, 32, 32, framebuf.MONO_HLSB)
+        self.oled.blit(wing_fb, xPx, 0)
+        self.oled.show()
+
+    def display_mothership(self, xPx: int = 0):
+        mothership_fb = framebuf.FrameBuffer(
+            mothership_bytes, 32, 32, framebuf.MONO_HLSB
+        )
+        self.oled.blit(mothership_fb, xPx, 0)
+        self.oled.show()
+
+    def display_d20(self, xPx: int = 0):
+        d20_fb = framebuf.FrameBuffer(d20_bytes, 32, 32, framebuf.MONO_HLSB)
+        self.oled.blit(d20_fb, xPx, 0)
+        self.oled.show()
+
+    def display_crown(self, xPx: int = 0):
+        crown_fb = framebuf.FrameBuffer(crown_bytes, 32, 32, framebuf.MONO_HLSB)
+        self.oled.blit(crown_fb, xPx, 0)
+        self.oled.show()
+
+    def display_black_lotus(self, xPx: int = 0):
+        black_lotus_fb = framebuf.FrameBuffer(
+            black_lotus_bytes, 32, 32, framebuf.MONO_HLSB
+        )
+        self.oled.blit(black_lotus_fb, xPx, 0)
+        self.oled.show()
+
+    def paint_black_custom(self, x, y, width=32, height=32):
+        # Paint a black rectangle starting from the specified x and y coordinates used to 'clear' images
+        self.oled.fill_rect(x, y, width, height, 0)
 
     def show(self):
         self.oled.show()
@@ -317,6 +379,113 @@ class Heartbeat(object):
         # print("Heartbeat tick {0}".format(self.tick))
 
 
+class MTGGame:
+    def __init__(self, mqtt_handler):
+        global selectedUser
+        self.uid = selectedUser
+        self.mqtt_handler = mqtt_handler
+        self.game_over = False
+        self.current_player = None
+        self.lobby = []
+        self.players = []
+        self.winner = None
+
+    def join_game(self):
+        publish_message(
+            client=self.mqtt_handler.heart_beat.client,
+            topic="api/game/mtg/r/join",
+            payload=self.uid,
+        )
+
+    def me_next(self):
+        publish_message(
+            client=self.mqtt_handler.heart_beat.client,
+            topic="api/game/mtg/r/meNext",
+            payload=self.uid,
+        )
+
+    def start_game(self):
+        publish_message(
+            client=self.mqtt_handler.heart_beat.client,
+            topic="api/game/mtg/r/start",
+            payload="",
+        )
+
+    def next_turn(self):
+        publish_message(
+            client=self.mqtt_handler.heart_beat.client,
+            topic="api/game/mtg/r/nextTurn",
+            payload="",
+        )
+
+    def pause_play(self):
+        publish_message(
+            client=self.mqtt_handler.heart_beat.client,
+            topic="api/game/mtg/r/pausePlayCurrentPlayer",
+            payload="",
+        )
+
+    def clear_game(self):
+        publish_message(
+            client=self.mqtt_handler.heart_beat.client,
+            topic="api/game/mtg/r/clearGame",
+            payload="",
+        )
+
+    def modify_cmdr_dmg(self, dmgFrom: str, dmg: int):
+        publish_message(
+            client=self.mqtt_handler.heart_beat.client,
+            topic="api/game/mtg/r/modifyCommanderDmg",
+            payload={"playerHit": self.uid, "dmgFrom": dmgFrom, "dmg": dmg},
+        )
+
+    def modify_player_health(self, amount: int):
+        publish_message(
+            client=self.mqtt_handler.heart_beat.client,
+            topic="api/game/mtg/r/modifyPlayerHealth",
+            payload={"uid": self.uid, "amount": amount},
+        )
+
+    def update_game_state(self, update):
+        self.game_over = update.get("gameOver", False)
+        self.lobby = update.get("lobby", [])
+        self.players = update.get("players", [])
+        self.current_player = update.get("currentPlayer", None)
+        self.winner = update.get("winner", None)
+
+        # Update the OLED screen with the current game state
+        self.update_display()
+
+    def update_display(self):
+        # Example: Display the current players on the OLED screen
+        player_info = "\n".join(
+            [
+                f"{player['playerName']}: {player['playerHealth']}"
+                for player in self.players
+            ]
+        )
+        self.mqtt_handler.oled.display_long_text(player_info)
+
+    def handle_command(self, command):
+        if (
+            command == "joinGame" and (player["uid"] != self.uid)
+            for player in self.players
+        ):
+            self.join_game()
+        elif command == "startGame" and len.self.lobby != 0:
+            self.start_game()
+        elif (
+            command == "meNext" and (player["uid"] != self.uid)
+            for player in self.players
+        ):
+            self.me_next()
+        elif command == "pausePlayCurrentPlayer":
+            self.pause_play()
+        if self.current_player.get("uid") == self.uid:
+            if command == "passTurn":
+                self.next_turn()
+
+
 class MqttHandler(object):
     """handle the heart beat check message callback, execute led commands and contain the led configuration"""
 
@@ -331,6 +500,10 @@ class MqttHandler(object):
         self.mothership = mothership
         self.oled = oled
         self.selector = selector
+        self.mtg_game = None
+
+    def set_mtg_game(self, mtg_game: MTGGame):
+        self.mtg_game = mtg_game
 
     def check_msg(self, topic, msg):
         """Callback trigger from subscription response"""
@@ -349,7 +522,7 @@ class MqttHandler(object):
                 if to_me(loadedJson["client_id"]):
                     self.heart_beat.publish_config()
             elif loadedTopic == "api/game/mtg/p/update":
-                print(loadedJson)
+                self.mtg_game.update_game_state(loadedJson)
             elif loadedTopic == "question":
                 if (
                     to_me(loadedJson["client_id"])
@@ -486,48 +659,6 @@ def connect_to_wlan(ssid, password):
     return wlan
 
 
-class MTGGame:
-    def __init__(self, mqtt_handler):
-        self.mqtt_handler = mqtt_handler
-        self.players = []
-        self.game_over = False
-        self.current_player = None
-
-    def join_game(self, uid):
-        publish_message(
-            client=self.mqtt_handler.heart_beat.client,
-            topic="api/game/mtg/r/join",
-            payload=uid,
-        )
-
-    def update_game_state(self, update):
-        self.game_over = update.get("gameOver", False)
-        self.players = update.get("lobby", [])
-        self.current_player = update.get("currentPlayer", None)
-
-        # Update the OLED screen with the current game state
-        self.update_display()
-
-    def update_display(self):
-        # Example: Display the current players on the OLED screen
-        player_info = "\n".join(
-            [
-                f"{player['playerName']}: {player['playerHealth']}"
-                for player in self.players
-            ]
-        )
-        self.mqtt_handler.oled.display_long_text(player_info)
-
-    def handle_command(self, command):
-        if command == "joinGame":
-            self.join_game(command.player_id)
-        elif command == "startGame":
-            self.start_game()
-        elif command == "meNext":
-            # Logic to handle turn order
-            pass
-
-
 class MainMenu:
     def __init__(self, oled: OLED, mqtt_handler: MqttHandler):
         self.oled: OLED = oled
@@ -535,6 +666,7 @@ class MainMenu:
         self.selected_index = 0
         self.mqtt_handler = mqtt_handler
         self.mtg_game = MTGGame(mqtt_handler)
+        mqtt_handler.set_mtg_game(self.mtg_game)
 
     def left(self):
         menu_count = len(self.menu_options)
@@ -641,7 +773,7 @@ class MainMenu:
                 self.oled.clear()
                 self.oled.display_text("Starting MTG Game...", 0)
                 self.oled.show()
-                self.mtg_game.join_game(selectedUser)
+                self.mtg_game.handle_command("joinGame")
             else:
                 selectedUser = self.login()
 
